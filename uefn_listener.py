@@ -27,7 +27,7 @@ import unreal
 # Configuration
 # ---------------------------------------------------------------------------
 
-PROTOCOL_VERSION = "0.2.0"
+PROTOCOL_VERSION = "0.3.0"
 DEFAULT_PORT = 8765
 MAX_PORT = 8770
 TICK_BATCH_LIMIT = 5
