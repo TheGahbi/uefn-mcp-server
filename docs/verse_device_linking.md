@@ -107,8 +107,59 @@ instance form `my_tag{}` is deprecated) + cast + sort.
 - For-loop **sources** are failure contexts too: annotate helper functions
   `<transacts>` or hoist, otherwise `for (X : GetThings()):` fails to compile.
 
-## The one thing that can't be scripted
+## Building Verse by script
 
-**Verse > Build Verse Code** (Ctrl+Shift+B) has no scripting hook. Compiled verse
-classes only exist at `/<Project>/_Verse.<name>` after a successful build — do the
+**Verse > Build Verse Code** (Ctrl+Shift+B) has no python or console API — but it
+CAN be scripted via foreground-verified keyboard synthesis: see
+[editor_actions.md](editor_actions.md) (`build_verse()`, plus `save_all()` and
+`push_changes()`, and the compile-error self-check loop that reads
+`VerseBuild: SUCCESS` / `VerseBuild: Error:` lines from the editor log). Compiled
+verse classes only exist at `/<Project>/_Verse.<name>` after a successful build —
 build before harvesting slot names or loading tag classes.
+
+## Field-tested refinements (battle scars)
+
+Lessons from linking a full 6-plot game (hundreds of slots) that this doc's first
+version didn't know:
+
+- **The proxies live on the INNER script instance, not the actor.**
+  `actor.get_editor_property("__verse_0x...")` fails with "Failed to find
+  property". Resolve the instance first:
+  ```python
+  inner = unreal.find_object(None, actor.get_path_name() + ".<class_name>_0")
+  proxy = inner.get_editor_property("__verse_0xHASH_SlotName")
+  proxy.set_editor_property("SavedActor", target_actor)
+  ```
+- **`dir()` never exposes `__verse_0x` properties** — harvesting from the T3D
+  clipboard text is the only discovery path. And read the clipboard from an
+  OUTSIDE process (`Get-Clipboard` in PowerShell): in-process `ctypes`
+  `GetClipboardData` returns a null handle in the editor.
+- **Verse-device-to-verse-device refs are DIRECT pointers** (no SavedActor proxy):
+  `inner.set_editor_property(mangled, other_inner)`; for arrays, get the array,
+  assign the element, set it back.
+- **Asset editables (`creative_prop_asset`) are the protected exception.** Their
+  proxy subobjects are named `Devices_creative_prop_asset_N`; the payload property
+  `ActorClass` is protected from python for both read AND write. Channel: T3D
+  paste-replace — inject `ActorClass="/Pkg/Path/BP_X.BP_X_C"` (**class form, WITH
+  `_C`**) into the proxy's instance block (`Begin Object Name="..." ExportPath=...`),
+  then paste-replace the device.
+- **Paste-replace safely**: EDIT COPY → rename the original (e.g. `_OLD`) → inject
+  lines into the clipboard text → EDIT PASTE (the clone keeps every link) → verify
+  the clone's links by readback → destroy the original → **re-link any INBOUND
+  refs** (other verse devices pointing at the replaced one hold direct pointers to
+  the old instance — reassign them to the clone's inner instance).
+- **World Partition persistence (One-File-Per-Actor)**: scripted edits change RAM
+  but may never flag the actor's external package dirty — a normal save then
+  silently skips them and the edits vanish on editor restart. Rules:
+  - Always call `actor.modify(True)` after scripted edits.
+  - Check pending state via `EditorLoadingAndSavingUtils.get_dirty_map_packages()`
+    / `get_dirty_content_packages()`.
+  - `Package.is_dirty` / `set_dirty_flag` / `mark_package_dirty` do NOT exist in
+    this build's python — don't prescribe them.
+  - Verify persistence ON DISK: `actor.get_package().get_name()` →
+    `Content/__ExternalActors__/...uasset`, check the mtime, then binary-scan for
+    the LINK TARGET's internal FName (`target.get_name()`, the `BP_X_C_UAID_...`
+    form). Scanning for labels or proxy names gives false positives — proxy names
+    exist in the file before any link does.
+  - Force-writer when dirty registration fails (spawn/attach/data-layer edits):
+    `EditorLoadingAndSavingUtils.save_packages(pkgs, only_dirty=False)`.

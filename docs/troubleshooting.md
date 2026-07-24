@@ -151,3 +151,33 @@ with unreal.ScopedSlowTask(100, 'Processing...') as task:
 ### Multiple editor instances
 
 Each editor instance needs its own listener on a different port. The auto-detect range (8765-8770) supports up to 6 simultaneous instances. Configure each MCP server connection with the correct port.
+
+## Editor Crashes (caused by scripts)
+
+The listener runs inside the editor process — buggy python can take the whole editor down. Field-confirmed rules:
+
+### Never pass `None` as a WorldContextObject
+
+```python
+# CRASHES THE EDITOR — hard access violation, no python traceback:
+unreal.SystemLibrary.execute_console_command(None, "EDIT COPY")
+
+# Always:
+world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
+unreal.SystemLibrary.execute_console_command(world, "EDIT COPY")
+```
+
+Any UObject-context parameter typed as a world context must be a live object. `None` compiles fine and dies at native level (`WorldContext requested with invalid context object` in the log, then `EXCEPTION_ACCESS_VIOLATION`). This class of bug produces **"connection closed mid-receive" followed by "connection refused"** on the MCP side.
+
+### Diagnosing a crash
+
+1. Check whether the editor process is actually gone (`UnrealEditorFortnite*` in the process list) — distinguishes an editor crash from a listener-only failure.
+2. Read the evidence, don't guess: `%LOCALAPPDATA%\UnrealEditorFortnite\Saved\Crashes\UECC-*\` contains `CrashContext.runtime-xml` (error + callstack — python-triggered crashes show engine frames stacked on `python311` frames) and a copy of the session log whose tail shows the last commands executed.
+
+### Don't run long python through the HTTP window
+
+The HTTP round-trip times out at 30s; the queued work still completes on the main thread but **its result is lost**. Full-object sweeps (`unreal.ObjectIterator()` over everything) take minutes — use targeted `unreal.find_object()` with a known path instead.
+
+### Scripted saves vs. user saves
+
+Don't bundle a level save into the same call as risky edits — if the call dies you cannot tell what persisted. Make edits + `actor.modify(True)` + verify by readback in one call; save separately (`save_dirty_packages`, or let the user Ctrl+S). See the persistence rules in [verse_device_linking.md](verse_device_linking.md).

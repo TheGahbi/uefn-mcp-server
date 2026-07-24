@@ -15,6 +15,7 @@ Claude Code  <--stdio-->  MCP Server (mcp_server.py)  <--HTTP-->  Listener (uefn
 - 🏗️ **Edit the scene** — spawn, move, duplicate, and delete actors; add components to placed actors; select and focus things for the user.
 - 📷 **See its own work** — drive the viewport camera and capture screenshots, enabling look-verify-fix loops without touching your mouse.
 - 🐛 **Debug alongside you** — read the editor Output Log, query project/level/asset state, search the Content Browser.
+- 🔨 **Compile, save, and push by itself** — trigger the Verse build (Ctrl+Shift+B), Save All, and Push Changes from script, then read its own compile errors from the log and fix them until the build is green. See [docs/editor_actions.md](docs/editor_actions.md).
 - 🐍 **Everything else** — `execute_python` runs arbitrary editor Python with the full `unreal` module (UEFN exposes 37,000+ types), so anything the editor's Python can reach, Claude can do.
 
 ## Under the hood
@@ -184,8 +185,9 @@ Run via **Tools > Execute Python Script** in the UEFN menu bar.
 | [Setup Guide](docs/setup.md) | Detailed installation and configuration |
 | [Tools Reference](docs/tools_reference.md) | All 28 tools with parameters, examples, and responses |
 | [Architecture](docs/architecture.md) | How the two-component system works internally |
-| [Troubleshooting](docs/troubleshooting.md) | Common issues and solutions |
+| [Troubleshooting](docs/troubleshooting.md) | Common issues and solutions — including script-caused editor crashes |
 | [UEFN Python Capabilities](docs/uefn_python_capabilities.md) | Full API capabilities map — 37K types across 30 domains |
+| [Editor Actions](docs/editor_actions.md) | Scripted Save All / Verse build / Push Changes + the compile-error self-check loop |
 
 ## Requirements
 

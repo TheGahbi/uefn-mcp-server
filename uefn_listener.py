@@ -1146,12 +1146,28 @@ class MCPStatusWindow:
 # ---------------------------------------------------------------------------
 
 
+class _MCPServer(HTTPServer):
+    """HTTPServer WITHOUT allow_reuse_address.
+
+    On Windows, SO_REUSEADDR lets a new socket bind a port that another socket
+    is ACTIVELY listening on — the OS then routes connections to the original
+    (possibly dead) socket and they get refused. HTTPServer enables it by
+    default; disabling it makes a genuinely-occupied port fail loudly instead
+    of silently stacking dead listeners. (This exact failure wedged the
+    listener on 2026-07-21.)
+    """
+    allow_reuse_address = False
+
+
 def _find_free_port() -> int:
-    """Find a free port in the configured range."""
+    """Find a free port in the configured range.
+
+    NOTE: no SO_REUSEADDR on the probe — with it, on Windows, the bind test
+    "succeeds" even when the port is actively held, defeating the check.
+    """
     for port in range(DEFAULT_PORT, MAX_PORT + 1):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind(("127.0.0.1", port))
             s.close()
             return port
@@ -1168,15 +1184,28 @@ def start_listener(port: int = 0, show_status: bool = True) -> int:
         show_status: Open the status window.
     """
     if unreal._mcp_server is not None:
-        _log(f"Listener already running on port {unreal._mcp_bound_port}", "warning")
-        if show_status and unreal._mcp_status_window:
-            unreal._mcp_status_window.start()
-        return unreal._mcp_bound_port
+        thread = unreal._mcp_server_thread
+        if thread is not None and thread.is_alive():
+            _log(f"Listener already running on port {unreal._mcp_bound_port}", "warning")
+            if show_status and unreal._mcp_status_window:
+                unreal._mcp_status_window.start()
+            return unreal._mcp_bound_port
+        # ZOMBIE: server object exists but its serve thread is dead (e.g. killed
+        # by sleep/hibernate). Force-clean so we fall through to a fresh start.
+        # Do NOT call shutdown() here — on a dead loop it blocks forever.
+        _log("Stale listener detected (dead serve thread) — force-cleaning", "warning")
+        try:
+            unreal._mcp_server.server_close()
+        except Exception:
+            pass
+        unreal._mcp_server = None
+        unreal._mcp_server_thread = None
+        unreal._mcp_bound_port = 0
 
     if port == 0:
         port = _find_free_port()
 
-    unreal._mcp_server = HTTPServer(("127.0.0.1", port), _MCPHandler)
+    unreal._mcp_server = _MCPServer(("127.0.0.1", port), _MCPHandler)
     unreal._mcp_bound_port = port
 
     unreal._mcp_server_thread = threading.Thread(
@@ -1211,9 +1240,18 @@ def stop_listener() -> None:
         _log("Listener is not running", "warning")
         return
 
-    unreal._mcp_server.shutdown()
-    if unreal._mcp_server_thread is not None:
-        unreal._mcp_server_thread.join(timeout=3.0)
+    # shutdown() waits on the serve loop to acknowledge — on a DEAD loop it
+    # blocks forever (this hung the Restart button on 2026-07-21). Only call it
+    # when the serve thread is actually alive; server_close() below always
+    # frees the socket either way.
+    thread = unreal._mcp_server_thread
+    if thread is not None and thread.is_alive():
+        unreal._mcp_server.shutdown()
+        thread.join(timeout=3.0)
+    try:
+        unreal._mcp_server.server_close()
+    except Exception:
+        pass
 
     unreal._mcp_server = None
     unreal._mcp_server_thread = None
