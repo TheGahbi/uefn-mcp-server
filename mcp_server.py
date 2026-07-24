@@ -27,7 +27,25 @@ import urllib.error
 import urllib.request
 from typing import Any, Optional
 
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except ImportError as _e:
+    # The #1 cause of "works on my machine but not theirs": the `mcp` package is
+    # not installed in THIS interpreter. Claude Code launches whatever `python`
+    # (or the configured command) resolves to — which may differ from the one you
+    # ran `pip install mcp` against. Fail LOUD with the exact fix instead of a
+    # cryptic "server failed to start".
+    sys.stderr.write(
+        "\n[uefn-mcp] FATAL: the 'mcp' package is not installed in this Python.\n"
+        f"           Interpreter: {sys.executable}\n"
+        f"           Version:     {sys.version.split()[0]}\n"
+        "           Fix (installs into THIS exact interpreter):\n"
+        f'               "{sys.executable}" -m pip install mcp\n'
+        "           Then in your .mcp.json set the SAME interpreter as \"command\":\n"
+        f'               "command": "{sys.executable}"\n'
+        f"           Original error: {_e}\n\n"
+    )
+    sys.exit(1)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -596,7 +614,39 @@ def set_viewport_camera(
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _doctor() -> int:
+    """Self-diagnosis for 'it works for them but not me'. Run:  python mcp_server.py --check"""
+    print("UEFN MCP - setup check")
+    print("-" * 48)
+    print(f"Python interpreter : {sys.executable}")
+    print(f"Python version     : {sys.version.split()[0]}")
+    try:
+        import mcp  # noqa: F401
+        print("mcp package        : OK (importable in this interpreter)")
+    except ImportError:
+        print("mcp package        : MISSING  <-- this is why the server won't start")
+        print(f'  Fix: "{sys.executable}" -m pip install mcp')
+        print(f'  And set  "command": "{sys.executable}"  in your .mcp.json')
+        return 1
+    print(f"Scanning for listener on ports {DEFAULT_PORT}-{MAX_PORT} ...")
+    for port in range(DEFAULT_PORT, MAX_PORT + 1):
+        if _ping_port(port):
+            print(f"UEFN listener      : FOUND on port {port}")
+            print("\nAll good. Use this in .mcp.json:")
+            print(f'  {{ "command": "{sys.executable}", "args": ["{os.path.abspath(__file__)}"] }}')
+            return 0
+    print("UEFN listener      : NOT FOUND")
+    print("  Open your project in UEFN and run uefn_listener.py via Tools > Execute Python Script.")
+    print("  (The server still starts; it will connect once the listener is up.)")
+    print("\nUse this in .mcp.json:")
+    print(f'  {{ "command": "{sys.executable}", "args": ["{os.path.abspath(__file__)}"] }}')
+    return 0
+
+
 if __name__ == "__main__":
+    if "--check" in sys.argv or "--doctor" in sys.argv:
+        sys.exit(_doctor())
+
     # Allow --port override (skips auto-discovery, uses fixed port)
     for i, arg in enumerate(sys.argv[1:], 1):
         if arg == "--port" and i < len(sys.argv) - 1:

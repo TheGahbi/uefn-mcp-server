@@ -55,33 +55,58 @@ The listener will start automatically every time you open the project in UEFN.
 
 ## Step 3: Install MCP SDK
 
-On your system (not inside UEFN):
+> ⚠️ **The #1 reason this "works for one person but not another."** Claude Code
+> launches whatever the `command` in your config resolves to (e.g. `python`). If
+> `mcp` is installed into a *different* interpreter than that one, the server dies
+> at startup with a cryptic error. Install into the **exact** interpreter you will
+> point the config at, and use its full path.
+
+Find the interpreter you'll use and install `mcp` into that same one:
 
 ```bash
-pip install mcp
+# 1. Find the interpreter's full path (use whichever of these runs on your system):
+python  -c "import sys; print(sys.executable)"      # Windows
+python3 -c "import sys; print(sys.executable)"      # macOS / Linux
+
+# 2. Install mcp into THAT interpreter (note the -m pip form):
+python  -m pip install mcp
 ```
 
-Verify:
+On a fresh Windows install, `python` may open the Microsoft Store instead of
+running — install Python from [python.org](https://www.python.org/downloads/) and
+tick **"Add python.exe to PATH"**, or just use the full `.exe` path everywhere.
+
+Verify — and get your ready-to-paste config line — with the built-in check:
+
 ```bash
-python -c "from mcp.server.fastmcp import FastMCP; print('OK')"
+python mcp_server.py --check
 ```
+
+It prints the interpreter, whether `mcp` is importable, whether the UEFN listener
+is reachable, and the exact `.mcp.json` snippet to use.
 
 ## Step 4: Configure Claude Code
 
 ### Option A: Project-level config (recommended)
 
-Create `.mcp.json` in your project root:
+Create `.mcp.json` in your project root. **Use the full interpreter path from Step 3**
+(the one that has `mcp` installed) — not a bare `"python"`, which is the usual cause
+of "server failed to start" on someone else's machine:
 
 ```json
 {
   "mcpServers": {
     "uefn": {
-      "command": "python",
-      "args": ["/path/to/uefn-mcp-server/mcp_server.py"]
+      "command": "C:/Users/you/AppData/Local/Programs/Python/Python312/python.exe",
+      "args": ["C:/path/to/uefn-mcp-server/mcp_server.py"]
     }
   }
 }
 ```
+
+`python mcp_server.py --check` prints this exact line filled in for your machine.
+(A bare `"python"` works too *if* the same `python` on your PATH is the one with
+`mcp` installed — the full path just removes all doubt.)
 
 ### Option B: Global config
 

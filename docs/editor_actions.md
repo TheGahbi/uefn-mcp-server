@@ -6,6 +6,10 @@ that keep an automation loop closed: **Save All**, **Build Verse Code**, and
 its own compile errors, fix them, save, and push — without a human touching the
 keyboard.
 
+> **Platform:** Windows only. These helpers use `ctypes.windll` and the Win32
+> keyboard/window APIs. `save_all()` is pure `unreal` API and works anywhere, but
+> `build_verse()` / `push_changes()` synthesize keystrokes via Windows APIs.
+
 ## Install
 
 Copy `uefn_editor_actions.py` into your project's `Content/Python/` folder (next to

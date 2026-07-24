@@ -1,5 +1,8 @@
 # uefn_editor_actions.py — editor-level actions with no direct python API.
 #
+# PLATFORM: Windows only. build_verse()/push_changes() synthesize keystrokes via
+# ctypes.windll (Win32). save_all() is pure `unreal` API and works on any OS.
+#
 # Drop this file into your project's Content/Python/ folder (next to the listener).
 # It is importable immediately — no editor restart needed:
 #

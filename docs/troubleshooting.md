@@ -35,6 +35,40 @@ To find what's using the port:
 netstat -ano | findstr :8765
 ```
 
+## "Works for one person but not another" / tools never appear
+
+Almost always an **interpreter mismatch**: Claude Code launches the `command` from
+your config, but `mcp` was installed into a *different* Python, so the server exits
+immediately and the tools never register.
+
+**Diagnose in one command:**
+
+```bash
+python mcp_server.py --check
+```
+
+It reports the interpreter path, whether `mcp` is importable there, whether the
+listener is reachable, and prints the exact `.mcp.json` line to use.
+
+**Fix:** install `mcp` into the *same* interpreter you name in the config, and name
+it by full path:
+
+```bash
+"C:/full/path/to/python.exe" -m pip install mcp
+```
+
+```json
+{ "command": "C:/full/path/to/python.exe", "args": ["C:/path/to/mcp_server.py"] }
+```
+
+Other fresh-machine gotchas:
+- On Windows, a bare `python` may open the Microsoft Store instead of running.
+  Install from python.org with "Add to PATH", or use the full `.exe` path.
+- On macOS/Linux it's usually `python3`, not `python`.
+- `uefn_editor_actions.py` (scripted build/save/push) is **Windows-only** — it
+  uses `ctypes.windll`. The core server and all tools are cross-platform; only
+  those keyboard-driven helpers require Windows.
+
 ## Command Errors
 
 ### "Command timed out after 30s"

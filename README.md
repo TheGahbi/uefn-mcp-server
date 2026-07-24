@@ -188,6 +188,7 @@ Run via **Tools > Execute Python Script** in the UEFN menu bar.
 | [Troubleshooting](docs/troubleshooting.md) | Common issues and solutions — including script-caused editor crashes |
 | [UEFN Python Capabilities](docs/uefn_python_capabilities.md) | Full API capabilities map — 37K types across 30 domains |
 | [Editor Actions](docs/editor_actions.md) | Scripted Save All / Verse build / Push Changes + the compile-error self-check loop |
+| [AI Context Pack](ai-context-pack/START_HERE.md) | Hand this folder to an AI agent — operating rules, mental model, and transferable lessons, written for an AI to read |
 
 ## Requirements
 
