@@ -883,13 +883,20 @@ def _mcp_tools_dir() -> str:
     env = os.environ.get("UEFN_MCP_TOOLS", "").strip()
     if env and os.path.isdir(env):
         return env
-    here = os.path.dirname(os.path.abspath(__file__))
-    if os.path.isfile(os.path.join(here, "start_remote_mcp.py")):
+    # UEFN's Tools > Execute Python Script execs this file WITHOUT setting
+    # __file__, so touching it raises NameError there. That killed the status
+    # window while the listener itself ran fine (UEFN 49 / UE 6.0, 2026-08-20).
+    here = ""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        pass
+    if here and os.path.isfile(os.path.join(here, "start_remote_mcp.py")):
         return here
     desktop = os.path.join(os.path.expanduser("~"), "Desktop", "UEFN_Fun", "tools", "uefn-mcp-server")
     if os.path.isdir(desktop):
         return desktop
-    return here
+    return here or os.getcwd()
 
 
 def _host_python() -> str:
