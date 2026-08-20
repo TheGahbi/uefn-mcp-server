@@ -244,6 +244,13 @@ Run via **Tools > Execute Python Script** in the UEFN menu bar.
 - `pip install mcp`
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
 
+## Credits
+
+Forked from [KirChuvakov/uefn-mcp-server](https://github.com/KirChuvakov/uefn-mcp-server).
+The v0.4.0 bridge to Epic's first-party UEFN MCP, and the additional editor/authoring
+tooling, are additions on top of that work.
+
 ## License
 
-MIT
+MIT - Copyright (c) 2025 KirChuvakov, and contributors to this fork.
+See [LICENSE](LICENSE).
