@@ -255,11 +255,17 @@ Python runs **editor-only** (not runtime). For gameplay logic use **Verse**.
 - Data Channels: `NiagaraDataChannelLibrary` — GPU communication
 - SimCache: record/playback for performance
 - Bake VFX into textures or static meshes
+- **Author emitter stacks end-to-end** (create the `NiagaraSystem`, add emitters, add
+  stock modules to Emitter/Particle Spawn+Update, set module inputs, add renderers,
+  compile, save) via the **CascadeToNiagaraConverter** API:
+  `NiagaraSystem.create_system_conversion_context()` → `add_empty_emitter` →
+  `find_or_add_module_script` → `set_parameter` → `finalize`, with inputs built by
+  `unreal.FXConverterUtilitiesLibrary`. Verified live 2026-07-26 — full recipe and
+  gotchas in [`../../../notes/niagara-vfx-editing-lesson.md`](../../../notes/niagara-vfx-editing-lesson.md) §4.
 
 ### Cannot Do
-- Edit emitter internals (stack architecture)
-- Create custom Niagara modules
-- Modify Niagara graphs programmatically
+- Create custom Niagara modules / edit module-script graphs (HLSL, graph nodes) — GUI only
+- Enumerate a module's input names (probe them: `set_parameter` returns a bool)
 
 ---
 

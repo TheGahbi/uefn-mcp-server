@@ -18,9 +18,56 @@ Claude Code  <--stdio-->  MCP Server (mcp_server.py)  <--HTTP-->  Listener (uefn
 - 🔨 **Compile, save, and push by itself** — trigger the Verse build (Ctrl+Shift+B), Save All, and Push Changes from script, then read its own compile errors from the log and fix them until the build is green. See [docs/editor_actions.md](docs/editor_actions.md).
 - 🐍 **Everything else** — `execute_python` runs arbitrary editor Python with the full `unreal` module (UEFN exposes 37,000+ types), so anything the editor's Python can reach, Claude can do.
 
+## v0.4.0 - now bridges Epic's official UEFN MCP
+
+UEFN (UE 6.0+) ships its own MCP server in the experimental `AIAssistant` plugin, on
+`http://127.0.0.1:8000/mcp`. It exposes **29 toolsets / 384 tools** behind a 3-tool gateway.
+
+**This server now wraps it, so you get both surfaces from one MCP:**
+
+| | |
+|---|---|
+| **60 tools total** | 32 bridged from Epic + 28 original |
+| `build_verse` | Epic's `BuildAll`. Returns structured diagnostics with file + line/character spans. **`[]` means success.** This replaces the old "user presses Ctrl+Shift+B" step entirely. |
+| `verse_*` | read/write/replace/list Verse source (module paths, not filesystem paths) |
+| `entity_*` | Scene Graph: create with a world transform in one call, add components, set transform, delete (incl. a fallback for undeletable ROOT entities) |
+| `device_*` | place devices, set properties, wire event bindings |
+| `verse_field_*` | add Verse fields to widgets, bind widget properties (incl. conversion functions) |
+| `mvvm_*` | create view bindings, list conversion functions, repair MVVM state |
+| `widget_animation_*` | create animations and bind widgets into them |
+| `session_control` | start/stop session and game, push changes, read client logs |
+| `epic_call_tool` | generic access to any of the 384 Epic tools by dotted name |
+
+### Why keep this server at all?
+
+Epic's MCP is typed and maintained, but it is a **curated subset**. It does not expose
+`SlateInspectorToolset`, `PCGToolset`, `PluginToolset`, `AIAssistantToolset`,
+`AgentSkillToolset`, `DataflowAgentToolset`, `GameFeaturesToolset`, `GameplayCueToolset`,
+`NiagaraToolset_Blueprint` and roughly eight more that `ToolsetRegistry` actually has -
+and it has no arbitrary-code path.
+
+`execute_python` still reaches strictly more surface: full `unreal` reflection, ctypes,
+asset bytes, the filesystem, and the hand-built recipes this project is built on
+(complete Niagara system authoring, T3D clipboard editing, widget-tree construction,
+AnimSequence generation).
+
+**Rule of thumb:** prefer the Epic-bridged tool where one exists - it is validated and
+stable. Fall back to `execute_python` for the long tail.
+
+### Requirements for the bridged tools
+
+A recent UEFN (UE 6.0+) with a project open. If Epic's endpoint is not answering, every
+bridged tool returns a clear error instead of failing silently; the original 28 tools keep
+working regardless.
+
+Note: UEFN now ships with Python **disabled by default**
+(`LogPython: Python disabled via CVar 'Engine.Python.IsEnabledByDefault'`), which stops
+`init_unreal.py` auto-starting the listener. Enable it in Project Settings, or call
+`epic_call_tool` with `ValkyrieToolset.ValkyriePythonToolset.EnablePythonInUEFN`.
+
 ## Under the hood
 
-- **28 structured tools** for actors, assets, levels, viewport, project info, and the editor log
+- **60 structured tools** - 28 native (actors, assets, levels, viewport, project info, editor log) plus 32 bridged from Epic's official UEFN MCP
 - **Zero C++ compilation** — pure Python, works across UEFN versions
 - **Main-thread safe** — all `unreal.*` calls dispatched via editor tick callback
 - **Live status window** — dark card UI with connection dots, metrics, and a real-time activity sparkline

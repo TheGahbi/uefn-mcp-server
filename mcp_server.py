@@ -614,6 +614,402 @@ def set_viewport_camera(
 # Entry point
 # ---------------------------------------------------------------------------
 
+# -- Epic first-party MCP bridge ---------------------------------------------
+# UEFN (UE 6.0+) ships its own MCP server on http://127.0.0.1:8000/mcp exposing
+# 29 toolsets / 384 tools. These tools proxy to it. See epic_bridge.py for the
+# handshake details. Our execute_python still reaches MORE surface (Epic's server
+# hides SlateInspector/PCG/Plugin/AIAssistant/... and has no arbitrary-code path),
+# so prefer Epic's where it covers the job and fall back to execute_python.
+
+try:
+    import epic_bridge as _epic
+except Exception:  # bridge is optional; never break the server over it
+    _epic = None
+
+
+def _need_epic():
+    if _epic is None:
+        return "epic_bridge.py not importable next to mcp_server.py"
+    if not _epic.is_available():
+        return ("Epic's MCP did not answer on http://127.0.0.1:8000/mcp. "
+                "It ships with UEFN UE 6.0+ (AIAssistant plugin); make sure a "
+                "project is open in a recent UEFN.")
+    return None
+
+
+@mcp.tool()
+def build_verse() -> str:
+    """Compile all Verse in the open project via Epic's first-party MCP.
+
+    This is the ONLY scripted Verse build that works. It replaces the old
+    "user presses Ctrl+Shift+B" / build_verse.ps1 mouse-click workaround.
+
+    Returns a JSON list of diagnostics -- an EMPTY list means the build succeeded.
+    Each entry carries: severity (Error|Warning|Information|Hint), code, message,
+    filePath, and span{startLine,startCharacter,endLine,endCharacter}, so compiler
+    errors come back structured instead of needing the editor log scraped.
+    """
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.build_verse(), indent=2)
+
+
+@mcp.tool()
+def epic_list_toolsets() -> str:
+    """List the toolsets exposed by Epic's first-party UEFN MCP (29 toolsets / 384 tools)."""
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    r = _epic.list_toolsets()
+    return r if isinstance(r, str) else json.dumps(r, indent=2)
+
+
+@mcp.tool()
+def epic_describe_toolset(toolset_name: str) -> str:
+    """Describe one Epic toolset: every tool name plus its full JSON input/output schema.
+
+    Args:
+        toolset_name: e.g. 'ValkyrieToolset.EntityToolset', 'MVVMToolset.MVVMToolset',
+                      'WidgetAnimationToolset.WidgetAnimationToolset'.
+                      Use epic_list_toolsets() to discover names.
+    """
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    r = _epic.describe_toolset(toolset_name)
+    return r if isinstance(r, str) else json.dumps(r, indent=2)
+
+
+@mcp.tool()
+def epic_call_tool(tool_name: str, arguments_json: str = "{}") -> str:
+    """Call any tool on Epic's first-party UEFN MCP by its FULL dotted name.
+
+    Args:
+        tool_name: full name including toolset, e.g.
+                   'ValkyrieToolset.EntityToolset.CreateEntity'
+                   'ValkyrieToolset.SessionToolset.StartSession'
+                   'MVVMToolset.MVVMToolset.CreateViewBinding'
+        arguments_json: JSON object of arguments. Get the exact schema from
+                   epic_describe_toolset() first -- Epic's errors are self-documenting
+                   and will print the expected schema if you get it wrong.
+
+    Notable tools this unlocks (all previously needed hand-rolled workarounds):
+        ValkyrieToolset.VerseToolset.*       ReadFile/WriteFile/Replace/Grep/BuildAll
+        ValkyrieToolset.EntityToolset.*      CreateEntity(with transform)/AddComponent/
+                                             SetEntityTransform -- plain world-space XYZ,
+                                             no mangled __verse_0x... property names
+        ValkyrieToolset.DeviceToolset.*      PlaceDevice/AddEventBinding
+        ValkyrieToolset.SessionToolset.*     StartSession/PushChanges/GetClientLogEntries
+        VerseFieldsToolset.*                 AddVerseField/BindWidgetPropertyToVerseField
+        MVVMToolset.*                        CreateViewBinding/ListConversionFunctions
+        WidgetAnimationToolset.*             CreateWidgetAnimation/AddWidgetToAnimation
+    """
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    try:
+        args = json.loads(arguments_json) if arguments_json else {}
+    except json.JSONDecodeError as e:
+        return json.dumps({"error": f"arguments_json is not valid JSON: {e}"}, indent=2)
+    r = _epic.call(tool_name, args)
+    return r if isinstance(r, str) else json.dumps(r, indent=2)
+
+
+# -- Epic MCP: first-class wrappers -------------------------------------------
+# Convenience tools over the Epic toolsets that previously needed hand-rolled
+# workarounds. Anything not covered here is still reachable via epic_call_tool.
+
+
+@mcp.tool()
+def verse_list_files(path: str = "", recursive: bool = False) -> str:
+    """List Verse files/directories. Call with path="" first to see the mounted roots.
+
+    IMPORTANT: paths are Verse MODULE paths like '/MyProject/Folder/file.verse',
+    NOT filesystem paths. Passing a Windows path is rejected.
+    """
+    err = _need_epic()
+    if err: return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.verse_list(path, recursive), indent=2)
+
+
+@mcp.tool()
+def verse_read_file(path: str) -> str:
+    """Read a Verse source file by its module path (e.g. '/MyProject/thing.verse')."""
+    err = _need_epic()
+    if err: return json.dumps({"error": err}, indent=2)
+    r = _epic.verse_read(path)
+    return r.get("returnValue", json.dumps(r)) if isinstance(r, dict) else str(r)
+
+
+@mcp.tool()
+def verse_write_file(path: str, content: str, create_if_missing: bool = True) -> str:
+    """Write a Verse source file (module path). Follow with build_verse() to compile."""
+    err = _need_epic()
+    if err: return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.verse_write(path, content, create_if_missing), indent=2)
+
+
+@mcp.tool()
+def verse_replace(path: str, old_string: str, new_string: str,
+                  replace_all: bool = False) -> str:
+    """Exact string replacement inside a Verse file. Cheaper than rewriting the file."""
+    err = _need_epic()
+    if err: return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.verse_replace(path, old_string, new_string, replace_all), indent=2)
+
+
+@mcp.tool()
+def entity_find(name_filter: str = "", recursive: bool = True) -> str:
+    """List Scene Graph entities in the open level, with their class and refPath."""
+    err = _need_epic()
+    if err: return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.entity_find(recursive, name_filter), indent=2)
+
+
+@mcp.tool()
+def entity_create(name: str, x: float = 0.0, y: float = 0.0, z: float = 0.0,
+                  pitch: float = 0.0, yaw: float = 0.0, roll: float = 0.0,
+                  scale: float = 1.0) -> str:
+    """Create a Scene Graph entity WITH its world transform in one call.
+
+    Plain world-space XYZ -- no mangled __verse_0x... property names, no LUF sign
+    flip. Returns the entity refPath, which the other entity_* tools take.
+    """
+    err = _need_epic()
+    if err: return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.entity_create(name, (x, y, z), (pitch, yaw, roll),
+                                          (scale, scale, scale)), indent=2)
+
+
+@mcp.tool()
+def entity_add_component(entity_ref_path: str, component_class_path: str) -> str:
+    """Add a component to an entity.
+
+    Args:
+        entity_ref_path: refPath from entity_create/entity_find.
+        component_class_path: e.g.
+            '/VerseEngineAssets/_Verse/VNI/VerseEngineAssets.BasicShapes_cube'
+            '/EntityFramework/_Verse/VNI/Component.mesh_component'
+            Use entity_list_component_classes() to search the 179 available.
+    """
+    err = _need_epic()
+    if err: return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.entity_add_component({"refPath": entity_ref_path},
+                                                 component_class_path), indent=2)
+
+
+@mcp.tool()
+def entity_list_component_classes(name_filter: str = "") -> str:
+    """Search the 179 Scene Graph component classes by substring."""
+    err = _need_epic()
+    if err: return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.entity_component_classes(name_filter), indent=2)
+
+
+@mcp.tool()
+def entity_get_components(entity_ref_path: str) -> str:
+    """List the components actually on an entity. Use this to VERIFY an add landed."""
+    err = _need_epic()
+    if err: return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.entity_components({"refPath": entity_ref_path}), indent=2)
+
+
+@mcp.tool()
+def entity_set_transform(entity_ref_path: str, x: float, y: float, z: float,
+                         pitch: float = 0.0, yaw: float = 0.0, roll: float = 0.0,
+                         scale: float = 1.0) -> str:
+    """Move/rotate/scale an entity in plain world space."""
+    err = _need_epic()
+    if err: return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.entity_set_transform({"refPath": entity_ref_path},
+                                                 (x, y, z), (pitch, yaw, roll),
+                                                 (scale, scale, scale)), indent=2)
+
+
+@mcp.tool()
+def entity_delete(entity_ref_path: str, display_name: str = "") -> str:
+    """Delete an entity, with the ROOT-entity escape hatch built in.
+
+    Epic's DeleteEntity refuses root entities ("Cannot delete the root entity").
+    Pass display_name and this falls back to removing the backing EntityProxyActor
+    via SceneTools.remove_from_scene, which does work.
+    """
+    err = _need_epic()
+    if err: return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.entity_delete({"refPath": entity_ref_path},
+                                          display_name or None), indent=2)
+
+
+@mcp.tool()
+def session_control(action: str) -> str:
+    """Drive a UEFN playtest session.
+
+    Args:
+        action: one of start_session | stop_session | start_game | stop_game |
+                push_changes | status | game_state | client_logs
+    """
+    err = _need_epic()
+    if err: return json.dumps({"error": err}, indent=2)
+    fns = {"start_session": _epic.session_start, "stop_session": _epic.session_stop,
+           "start_game": _epic.game_start, "stop_game": _epic.game_stop,
+           "push_changes": _epic.session_push, "status": _epic.session_status,
+           "game_state": _epic.game_state, "client_logs": _epic.client_logs}
+    fn = fns.get(action)
+    if not fn:
+        return json.dumps({"error": f"unknown action {action!r}",
+                           "valid": sorted(fns)}, indent=2)
+    return json.dumps(fn(), indent=2)
+
+
+# -- Epic MCP: devices / verse fields / MVVM / widget animations --------------
+# Covers the capabilities that previously required hand-rolled hacks:
+# T3D clipboard, ctypes patches at offsets 200 and 256/264, 'Sequencer UI only'.
+
+
+@mcp.tool()
+def device_list_assets(name_filter: str = '') -> str:
+    """Search placeable Fortnite device assets by substring."""
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.device_list_assets(name_filter), indent=2)
+
+
+@mcp.tool()
+def device_place(asset_path: str, x: float = 0.0, y: float = 0.0, z: float = 0.0, yaw: float = 0.0, scale: float = 1.0) -> str:
+    """Place a device at a world transform. Replaces the T3D clipboard trick."""
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.device_place(asset_path, (x, y, z), (0.0, yaw, 0.0), (scale, scale, scale)), indent=2)
+
+
+@mcp.tool()
+def device_list_properties(device_path: str) -> str:
+    """List the settable properties on a placed device."""
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.device_list_properties(device_path), indent=2)
+
+
+@mcp.tool()
+def device_set_property(device_path: str, property_name: str, value: str) -> str:
+    """Set one property on a placed device."""
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.device_set_property(device_path, property_name, value), indent=2)
+
+
+@mcp.tool()
+def device_binding_options(device_path: str) -> str:
+    """List events and functions a device exposes for event binding."""
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.device_binding_options(device_path), indent=2)
+
+
+@mcp.tool()
+def device_add_event_binding(source_device_path: str, source_event: str, target_device_path: str, target_function: str) -> str:
+    """Wire a device event to another device function. Call device_binding_options first for valid names."""
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.device_add_event_binding(source_device_path, source_event, target_device_path, target_function), indent=2)
+
+
+@mcp.tool()
+def verse_field_list(widget_blueprint: str) -> str:
+    """List Verse fields on a Widget Blueprint (asset path)."""
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.verse_field_list(widget_blueprint), indent=2)
+
+
+@mcp.tool()
+def verse_field_add(widget_blueprint: str, field_name: str, field_type: str, default_value: str = '', visibility: str = 'public', write_access: str = 'public', is_var: bool = True) -> str:
+    """Add a Verse field to a Widget Blueprint. Officially supported now; this used to need a ctypes patch at descriptor offset 200. field_type is a Verse type: logic|int|float|string|message|event|color|color_alpha|material|texture."""
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.verse_field_add(widget_blueprint, field_name, field_type, default_value, visibility, write_access, is_var), indent=2)
+
+
+@mcp.tool()
+def verse_field_bind_widget(widget_blueprint: str, verse_field_name: str, target_widget: str, widget_property_path: str, conversion_name: str = '', mode: str = '') -> str:
+    """Bind a widget property to a Verse field, optionally through a CONVERSION function. conversion_name is the piece that previously needed hand-authoring MVVMBlueprintViewConversionFunction plus a ctypes GraphName patch at offsets 256/264. Discover names with mvvm_list_conversion_functions."""
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.verse_field_bind_widget(widget_blueprint, verse_field_name, target_widget, widget_property_path, mode, conversion_name), indent=2)
+
+
+@mcp.tool()
+def mvvm_list_bindings(widget_blueprint: str) -> str:
+    """List MVVM view bindings. NOTE a conversion binding serializes with an EMPTY SourcePath - its real source is on a pin of the conversion node. Do not report those as sourceless."""
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.mvvm_list_bindings(widget_blueprint), indent=2)
+
+
+@mcp.tool()
+def mvvm_list_conversion_functions(widget_blueprint: str) -> str:
+    """List conversion functions available for bindings on this Widget Blueprint."""
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.mvvm_list_conversion_functions(widget_blueprint), indent=2)
+
+
+@mcp.tool()
+def mvvm_create_binding(widget_blueprint: str, source_context: str, source_property_path: str, destination_context: str, destination_property_path: str, conversion_name: str = '') -> str:
+    """Create an MVVM property binding, optionally through a conversion function."""
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.mvvm_create_binding(widget_blueprint, source_context, source_property_path, destination_context, destination_property_path, conversion_name), indent=2)
+
+
+@mcp.tool()
+def mvvm_fixup(widget_blueprint: str) -> str:
+    """Regenerate MVVM binding graphs to match stored data. Repairs broken binding state."""
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.mvvm_fixup(widget_blueprint), indent=2)
+
+
+@mcp.tool()
+def widget_animation_list(widget_blueprint: str) -> str:
+    """List the animations on a Widget Blueprint."""
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.widget_anim_list(widget_blueprint), indent=2)
+
+
+@mcp.tool()
+def widget_animation_create(widget_blueprint: str, animation_name: str, length_seconds: float = 0.0) -> str:
+    """Create a NEW widget animation. Previously believed impossible from script - add_possessable returns an empty Guid because CanPossessObject needs a playback context. Epic's tool does it."""
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.widget_anim_create(widget_blueprint, animation_name, length_seconds or None), indent=2)
+
+
+@mcp.tool()
+def widget_animation_add_widget(widget_blueprint: str, animation: str, object_to_bind: str) -> str:
+    """Bind a widget INTO an animation - the step that used to require the Sequencer UI."""
+    err = _need_epic()
+    if err:
+        return json.dumps({"error": err}, indent=2)
+    return json.dumps(_epic.widget_anim_add_widget(widget_blueprint, animation, object_to_bind), indent=2)
+
 def _doctor() -> int:
     """Self-diagnosis for 'it works for them but not me'. Run:  python mcp_server.py --check"""
     print("UEFN MCP - setup check")

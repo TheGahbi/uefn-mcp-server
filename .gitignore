@@ -9,3 +9,11 @@ build/
 .venv/
 venv/
 .env
+
+# local secret - never commit
+.mcp_token
+
+# live tunnel discovery - never commit
+.tunnel_status.json
+.tunnel_status.json.tmp
+

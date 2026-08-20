@@ -11,8 +11,10 @@ Or auto-start via init_unreal.py.
 
 import io
 import json
+import os
 import queue
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -27,7 +29,7 @@ import unreal
 # Configuration
 # ---------------------------------------------------------------------------
 
-PROTOCOL_VERSION = "0.3.1"
+PROTOCOL_VERSION = "0.4.0"
 DEFAULT_PORT = 8765
 MAX_PORT = 8770
 TICK_BATCH_LIMIT = 5
@@ -845,6 +847,119 @@ def _get_tk_root() -> tk.Tk:
 # ---------------------------------------------------------------------------
 
 
+
+# ---------------------------------------------------------------------------
+# Remote tunnel (Cloudflare + mcp_http_server). Never tunnels this listener.
+# ---------------------------------------------------------------------------
+
+_CREATE_NO_WINDOW = 0x08000000
+
+
+def _mcp_tools_dir() -> str:
+    env = os.environ.get("UEFN_MCP_TOOLS", "").strip()
+    if env and os.path.isdir(env):
+        return env
+    here = os.path.dirname(os.path.abspath(__file__))
+    if os.path.isfile(os.path.join(here, "start_remote_mcp.py")):
+        return here
+    desktop = os.path.join(os.path.expanduser("~"), "Desktop", "UEFN_Fun", "tools", "uefn-mcp-server")
+    if os.path.isdir(desktop):
+        return desktop
+    return here
+
+
+def _host_python() -> str:
+    local = os.path.join(
+        os.path.expanduser("~"), "AppData", "Local", "Programs", "Python", "Python312", "python.exe"
+    )
+    if os.path.isfile(local):
+        return local
+    return "python"
+
+
+def _hidden_popen(args, cwd=None, capture=False):
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0
+    kw = dict(cwd=cwd, startupinfo=si, creationflags=_CREATE_NO_WINDOW)
+    if capture:
+        kw["stdout"] = subprocess.DEVNULL
+        kw["stderr"] = subprocess.DEVNULL
+    return subprocess.Popen(args, **kw)
+
+
+def _read_tunnel_status() -> dict:
+    path = os.path.join(_mcp_tools_dir(), ".tunnel_status.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _pid_alive(pid) -> bool:
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        import ctypes
+        SYNCHRONIZE = 0x00100000
+        handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _tunnel_running() -> bool:
+    st = _read_tunnel_status()
+    if st.get("enabled") and st.get("url"):
+        pid = st.get("pid")
+        if pid is None or _pid_alive(pid):
+            return True
+    return False
+
+
+def _start_remote_tunnel() -> None:
+    tools = _mcp_tools_dir()
+    script = os.path.join(tools, "start_remote_mcp.py")
+    if not os.path.isfile(script):
+        _log(f"start_remote_mcp.py not found in {tools}", "error")
+        return
+    if _tunnel_running():
+        return
+    _hidden_popen([_host_python(), script, "--port", "8799"], cwd=tools, capture=True)
+    _log("Remote tunnel starting (8799 only; listener stays local)")
+
+
+def _stop_remote_tunnel() -> None:
+    st = _read_tunnel_status()
+    pid = st.get("pid")
+    if pid and _pid_alive(pid):
+        _hidden_popen(["taskkill", "/PID", str(int(pid)), "/T", "/F"], capture=True)
+    status_path = os.path.join(_mcp_tools_dir(), ".tunnel_status.json")
+    try:
+        with open(status_path, "w", encoding="utf-8") as fh:
+            json.dump({
+                "enabled": False,
+                "url": None,
+                "public_host": None,
+                "port": 8799,
+                "pid": None,
+                "listener_not_tunneled": True,
+                "error": None,
+            }, fh, indent=2)
+    except OSError:
+        pass
+    _log("Remote tunnel stopped")
+
+
 class MCPStatusWindow:
     """Status window for the MCP listener — dark card UI with live activity."""
 
@@ -880,6 +995,9 @@ class MCPStatusWindow:
         self._port_var: Optional[tk.StringVar] = None
         self._port_entry: Optional[tk.Entry] = None
         self._spark: Optional[tk.Canvas] = None
+        self._tunnel_dot = None
+        self._tunnel_text: Optional[tk.Label] = None
+        self._btn_tunnel: Optional[tk.Button] = None
 
     def start(self) -> None:
         """Open the status window in a background thread."""
@@ -941,7 +1059,7 @@ class MCPStatusWindow:
         self._window = window
         self._labels = {}
         window.title("UEFN MCP Listener")
-        window.geometry("292x350")
+        window.geometry("292x420")
         window.attributes("-topmost", True)
         window.configure(bg=self.BG)
         window.resizable(False, False)
@@ -987,6 +1105,16 @@ class MCPStatusWindow:
         self._client_text = tk.Label(row2, text="Waiting for a client...", font=self.FONT,
                                      fg=self.DIM, bg=self.CARD)
         self._client_text.pack(side="left", padx=(7, 0))
+
+        row3 = tk.Frame(card, bg=self.CARD)
+        row3.pack(fill="x", padx=12, pady=(0, 10))
+        self._tunnel_dot = self._dot(row3, self.FAINT)
+        self._tunnel_dot[0].pack(side="left")
+        self._tunnel_text = tk.Label(row3, text="Tunnel off", font=self.FONT,
+                                    fg=self.DIM, bg=self.CARD)
+        self._tunnel_text.pack(side="left", padx=(7, 0))
+        self._btn_tunnel = self._button(row3, "Enable", self._on_tunnel_toggle)
+        self._btn_tunnel.pack(side="right")
 
         # -- metrics card (2x2) --
         outer2, grid = self._card(window)
@@ -1095,6 +1223,22 @@ class MCPStatusWindow:
         else:
             self._labels["avg_time"].configure(text="—")
 
+        # remote tunnel (host Cloudflare + HTTP MCP)
+        st = _read_tunnel_status()
+        tun_on = bool(st.get("enabled") and st.get("url"))
+        if self._tunnel_text:
+            if tun_on:
+                self._set_dot(self._tunnel_dot, self.GREEN)
+                self._tunnel_text.configure(text="Tunnel on", fg=self.FG)
+            elif st.get("error") == "starting" or (st.get("enabled") and not st.get("url")):
+                self._set_dot(self._tunnel_dot, self.YELLOW)
+                self._tunnel_text.configure(text="Tunnel starting…", fg=self.DIM)
+            else:
+                self._set_dot(self._tunnel_dot, self.FAINT)
+                self._tunnel_text.configure(text="Tunnel off", fg=self.DIM)
+        if self._btn_tunnel:
+            self._btn_tunnel.configure(text="Disable" if tun_on or st.get("enabled") else "Enable")
+
         # sparkline: most recent response times as bars, right-aligned
         if self._spark:
             self._spark.delete("all")
@@ -1121,6 +1265,13 @@ class MCPStatusWindow:
         self._window.after(self.UPDATE_MS, self._update)
 
     # -- actions -------------------------------------------------------------
+
+    def _on_tunnel_toggle(self) -> None:
+        st = _read_tunnel_status()
+        if st.get("enabled"):
+            threading.Thread(target=_stop_remote_tunnel, daemon=True).start()
+        else:
+            threading.Thread(target=_start_remote_tunnel, daemon=True).start()
 
     def _on_toggle(self) -> None:
         if unreal._mcp_server is not None:
