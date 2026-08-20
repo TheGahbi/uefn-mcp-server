@@ -813,32 +813,56 @@ def _tick_handler(delta_time: float) -> None:
 
 
 def _get_tk_root() -> tk.Tk:
-    """Return a tk.Tk root, reusing an pre-existing one if possible.
+    """Return a tk.Tk root that THIS thread is allowed to drive.
 
     Must be called from the tkinter thread only.
     All visible windows should use tk.Toplevel(root).
-    """
-    # Check if someone already created a Tk root in this process
-    if hasattr(unreal, "_mcp_tk_root") and unreal._mcp_tk_root is not None:
-        try:
-            unreal._mcp_tk_root.winfo_exists()
-            return unreal._mcp_tk_root
-        except Exception:
-            unreal._mcp_tk_root = None
 
-    # Try to find an existing Tk instance (created by another script)
+    A tk root belongs to the thread that created it. Reusing one from a different
+    thread raises "RuntimeError: main thread is not in main loop" the moment you
+    build a widget or a StringVar against it -- which is what happened when the
+    listener was re-run in a session where a root already existed (UEFN 49 / UE 6.0,
+    2026-08-20). So the owning thread id is recorded alongside the root and a
+    foreign root is never reused.
+    """
+    me = threading.get_ident()
+
+    # A root we created earlier -- only reuse it from the SAME thread.
+    root = getattr(unreal, "_mcp_tk_root", None)
+    owner = getattr(unreal, "_mcp_tk_root_thread", None)
+    if root is not None:
+        try:
+            root.winfo_exists()
+            if owner == me:
+                return root
+            # Foreign root: cannot be driven from here. Drop our reference so a
+            # fresh one is made below; the old one is left alone for its owner.
+            unreal.log_warning(
+                "[MCP] tk root belongs to thread %s, this is %s - creating a new one"
+                % (owner, me))
+        except Exception:
+            pass
+        unreal._mcp_tk_root = None
+        unreal._mcp_tk_root_thread = None
+
+    # A root created by some other script -- same thread rule applies. tkinter does
+    # not expose the creating thread, so only adopt it if it is already usable here.
     try:
-        existing = tk._default_root  # noqa: SLF001 — tkinter internal
-        if existing is not None and existing.winfo_exists():
+        existing = tk._default_root  # noqa: SLF001 -- tkinter internal
+        if existing is not None:
+            existing.winfo_exists()
+            tk.StringVar(master=existing)  # cheap cross-thread probe; raises if foreign
             unreal._mcp_tk_root = existing
+            unreal._mcp_tk_root_thread = me
             return existing
     except Exception:
         pass
 
-    # No root exists — create a hidden one
+    # No usable root -- create a hidden one owned by this thread.
     root = tk.Tk()
     root.withdraw()
     unreal._mcp_tk_root = root
+    unreal._mcp_tk_root_thread = me
     return root
 
 
@@ -1015,9 +1039,21 @@ class MCPStatusWindow:
         return self._thread is not None and self._thread.is_alive()
 
     def _run(self) -> None:
-        root = _get_tk_root()
-        self._create_window()
-        root.mainloop()
+        # The status window is cosmetic. If tkinter cannot start (headless editor,
+        # a tk root owned by another thread, tcl weirdness), log it and let the
+        # LISTENER keep serving -- losing the window must never lose the MCP.
+        try:
+            root = _get_tk_root()
+            self._create_window()
+        except Exception as e:
+            unreal.log_warning(
+                "[MCP] status window unavailable (%s: %s) - listener is still running"
+                % (type(e).__name__, e))
+            return
+        try:
+            root.mainloop()
+        except Exception as e:
+            unreal.log_warning("[MCP] status window loop ended: %s" % e)
 
     # -- building blocks -----------------------------------------------------
 
